@@ -1,12 +1,10 @@
 import { MongoClient, ObjectId } from "mongodb";
 import { ApolloServer } from "@apollo/server";
 import { startStandaloneServer } from "@apollo/server/standalone";
-import { Flight, FlightModel } from "./types.ts";
-import { cabiovuelo } from "./resolve.ts"; // Importa la función
 
 //-----------------------------------------------------------------------------------------------------------------------------\\
 
-//conexiones 
+// Conexiones a la base de datos
 
 const MongoUrl = Deno.env.get("MONGO_URL");
 
@@ -17,104 +15,152 @@ const client = new MongoClient(MongoUrl);
 await client.connect();
 console.log("Conectado correctamente a la base de datos");
 
-//-----------------------------------------------------------------------------------------------------------------------------\\
+// Base de datos y colecciones
+const db = client.db("tiendaRepuestos");
+const vehicleCollection = db.collection("vehicles");
+const partCollection = db.collection("parts");
 
-//base de datos
-
-const db = client.db("flightDB");
-const flightCollection = db.collection<FlightModel>("flights");
-
-console.log("base de datos activa");
+console.log("Base de datos activa");
 
 //-----------------------------------------------------------------------------------------------------------------------------\\
 
-//esquema
+// Esquema de GraphQL
 
 const typeDefs = `#graphql
-  type Flight {
+  type Vehicle {
     id: String!
-    origen: String!
-    destino: String!
-    fechaHora: String!
+    name: String!
+    manufacturer: String!
+    year: Int!
+    parts: [Part!]!
+    joke: String
   }
 
-  type MutationResponse {
-    message: String!
+  type Part {
+    id: String!
+    name: String!
+    price: Float!
+    vehicleId: String!
   }
 
   type Query {
-    getFlights(origen: String, destino: String): [Flight!]!
-    getFlight(id: String!): Flight
+    getVehicles(manufacturer: String): [Vehicle!]!
+    getVehicle(id: String!): Vehicle
+    getParts: [Part!]!
+    getPartsByVehicle(vehicleId: String!): [Part!]!
   }
 
   type Mutation {
-    addFlight(origen: String!, destino: String!, fechaHora: String!): Flight!
-    deleteFlight(id: String!): MutationResponse!
+    addVehicle(name: String!, manufacturer: String!, year: Int!): Vehicle!
+    addPart(name: String!, price: Float!, vehicleId: String!): Part!
   }
 `;
 
 //-----------------------------------------------------------------------------------------------------------------------------\\
 
-//resolvers
+// Resolvers
 
 const resolvers = {
-
   Query: {
-    getFlights: async (_: unknown, args: { origen?: string; destino?: string }): Promise<Flight[]> => {
-      
-      const query: Partial<FlightModel> = {};
-      if (args.origen) query.origen = args.origen;
-      if (args.destino) query.destino = args.destino;
+    getVehicles: async (_: unknown, args: { manufacturer?: string }) => {
+      const query = args.manufacturer ? { manufacturer: args.manufacturer } : {};
+      const vehicles = await vehicleCollection.find(query).toArray();
 
-      const result = await flightCollection.find(query).toArray();
-      return result.map(cabiovuelo); // Utiliza la función de transformación
+      return vehicles.map(async (v) => ({
+        id: v._id.toString(),
+        name: v.name,
+        manufacturer: v.manufacturer,
+        year: v.year,
+        parts: await partCollection.find({ vehicleId: v._id }).toArray(),
+        joke: await fetch("https://official-joke-api.appspot.com/random_joke")
+          .then((res) => res.json())
+          .then((joke) => `${joke.setup} - ${joke.punchline}`),
+      }));
     },
 
-    //----------------------------------------------------------\\
+    getVehicle: async (_: unknown, args: { id: string }) => {
+      const vehicle = await vehicleCollection.findOne({ _id: new ObjectId(args.id) });
+      if (!vehicle) return undefined;
 
-    getFlight: async (_: unknown, args: { id: string }): Promise<Flight | undefined> => {
+      const parts = await partCollection.find({ vehicleId: vehicle._id }).toArray();
+      const joke = await fetch("https://official-joke-api.appspot.com/random_joke")
+        .then((res) => res.json())
+        .then((joke) => `${joke.setup} - ${joke.punchline}`);
 
-      const flight = await flightCollection.findOne({ _id: new ObjectId(args.id) });
-      if (!flight) return undefined;
-
-      return cabiovuelo(flight); // Utiliza la función de transformación
-    },
-    },
-
-    //------------------------------------------------------------------------------------------------------------------------\\
-
-    Mutation: {
-      
-      addFlight: async (_: unknown, args: { origen: string; destino: string; fechaHora: string }): Promise<Flight> => {
-        
-        const { insertedId } = await flightCollection.insertOne({
-          origen: args.origen,
-          destino: args.destino,
-          fechaHora: args.fechaHora,
-        });
-
-        return {
-          id: insertedId.toString(),
-          origen: args.origen,
-          destino: args.destino,
-          fechaHora: args.fechaHora,
-        };
-      },
-
+      return {
+        id: vehicle._id.toString(),
+        name: vehicle.name,
+        manufacturer: vehicle.manufacturer,
+        year: vehicle.year,
+        parts,
+        joke,
+      };
     },
 
+    getParts: async () => {
+      const parts = await partCollection.find().toArray();
+      return parts.map((p) => ({
+        id: p._id.toString(),
+        name: p.name,
+        price: p.price,
+        vehicleId: p.vehicleId.toString(),
+      }));
+    },
 
+    getPartsByVehicle: async (_: unknown, args: { vehicleId: string }) => {
+      const parts = await partCollection.find({ vehicleId: new ObjectId(args.vehicleId) }).toArray();
+      return parts.map((p) => ({
+        id: p._id.toString(),
+        name: p.name,
+        price: p.price,
+        vehicleId: p.vehicleId.toString(),
+      }));
+    },
+  },
+
+  Mutation: {
+    addVehicle: async (_: unknown, args: { name: string; manufacturer: string; year: number }) => {
+      const { insertedId } = await vehicleCollection.insertOne({
+        name: args.name,
+        manufacturer: args.manufacturer,
+        year: args.year,
+      });
+
+      return {
+        id: insertedId.toString(),
+        name: args.name,
+        manufacturer: args.manufacturer,
+        year: args.year,
+        parts: [],
+        joke: "",
+      };
+    },
+
+    addPart: async (_: unknown, args: { name: string; price: number; vehicleId: string }) => {
+      const { insertedId } = await partCollection.insertOne({
+        name: args.name,
+        price: args.price,
+        vehicleId: new ObjectId(args.vehicleId),
+      });
+
+      return {
+        id: insertedId.toString(),
+        name: args.name,
+        price: args.price,
+        vehicleId: args.vehicleId,
+      };
+    },
+  },
 };
 
 //-----------------------------------------------------------------------------------------------------------------------------\\
 
-//arranque de server
+// Arranque del servidor
 
-  const server = new ApolloServer({
-    typeDefs,
-    resolvers,
-  }
-  );
+const server = new ApolloServer({
+  typeDefs,
+  resolvers,
+});
 
 const { url } = await startStandaloneServer(server, { listen: { port: 4000 } });
 
