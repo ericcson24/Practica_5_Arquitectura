@@ -7,12 +7,11 @@ async function fetchPokemonData(identifier: string | number) {
   return await response.json();
 }
 
-// Función auxiliar para obtener detalles de la habilidad desde su URL
+// Función auxiliar para obtener detalles de una habilidad
 async function fetchAbilityDetails(url: string) {
   const response = await fetch(url);
   const data = await response.json();
 
-  // Buscar el efecto en español o en inglés
   const effectEntry =
     data.effect_entries.find((entry: any) => entry.language.name === "es") ||
     data.effect_entries.find((entry: any) => entry.language.name === "en");
@@ -20,16 +19,24 @@ async function fetchAbilityDetails(url: string) {
   return effectEntry ? effectEntry.effect : "Efecto no disponible";
 }
 
+// Función auxiliar para obtener detalles del movimiento
+async function fetchMoveDetails(url: string) {
+  const response = await fetch(url);
+  const data = await response.json();
+
+  return data.power || null; // Devuelve "power" si existe
+}
+
 //-----------------------------------------------------------------------------------------------------------------------------\\
 
-// Resolvers para el esquema GraphQL
+// Resolvers
 export const resolvers = {
   Query: {
     pokemon: async (_: unknown, args: { name?: string; id?: number }) => {
       const identifier = args.name || args.id;
       if (!identifier) throw new Error("Se debe proporcionar un nombre o un ID");
 
-      // Obtener los datos básicos del Pokémon desde la PokeAPI
+      // Obtener datos básicos del Pokémon
       const data = await fetchPokemonData(identifier);
 
       return {
@@ -43,7 +50,6 @@ export const resolvers = {
 
   Pokemon: {
     abilities: async (parent: any) => {
-      // Resolver las habilidades y obtener el efecto de cada una
       return await Promise.all(
         parent.abilities.map(async (abilityEntry: any) => {
           const name = abilityEntry.ability.name;
@@ -53,11 +59,18 @@ export const resolvers = {
       );
     },
 
-    moves: (parent: any) => {
-      // Resolver los movimientos del Pokémon
-      return parent.moves.map((moveEntry: any) => ({
-        name: moveEntry.move.name,
-      }));
-    },
+    moves: async (parent: any) => {
+      return await Promise.all(
+        parent.moves.map(async (moveEntry: any) => {
+          const moveResponse = await fetch(moveEntry.move.url);
+          const moveData = await moveResponse.json();
+          
+          return {
+            name: moveEntry.move.name,
+            power: moveData.power || null, // Devuelve el poder si existe
+          };
+        })
+      );
   },
-};
+},
+}
