@@ -1,27 +1,63 @@
-import { Vehicle, VehicleModel, Part, PartModel } from "./types.ts";
+// Función auxiliar para obtener datos de la PokeAPI
+async function fetchPokemonData(identifier: string | number) {
+  const response = await fetch(`https://pokeapi.co/api/v2/pokemon/${identifier}`);
+  if (!response.ok) {
+    throw new Error("Pokémon no encontrado");
+  }
+  return await response.json();
+}
 
-/**
- * Transforma un vehículo del modelo de MongoDB al formato de GraphQL.
- * @param vehicle El modelo del vehículo desde MongoDB.
- * @param parts Las partes asociadas al vehículo.
- * @returns El vehículo en formato GraphQL.
- */
-export const transformVehicle = (vehicle: VehicleModel, parts: Part[] = []): Vehicle => ({
-  id: vehicle._id.toString(),
-  name: vehicle.name,
-  manufacturer: vehicle.manufacturer,
-  year: vehicle.year,
-  parts,
-});
+// Función auxiliar para obtener detalles de la habilidad desde su URL
+async function fetchAbilityDetails(url: string) {
+  const response = await fetch(url);
+  const data = await response.json();
 
-/**
- * Transforma un repuesto del modelo de MongoDB al formato de GraphQL.
- * @param part El modelo del repuesto desde MongoDB.
- * @returns El repuesto en formato GraphQL.
- */
-export const transformPart = (part: PartModel): Part => ({
-  id: part._id.toString(),
-  name: part.name,
-  price: part.price,
-  vehicleId: part.vehicleId.toString(),
-});
+  // Buscar el efecto en español o en inglés
+  const effectEntry =
+    data.effect_entries.find((entry: any) => entry.language.name === "es") ||
+    data.effect_entries.find((entry: any) => entry.language.name === "en");
+
+  return effectEntry ? effectEntry.effect : "Efecto no disponible";
+}
+
+//-----------------------------------------------------------------------------------------------------------------------------\\
+
+// Resolvers para el esquema GraphQL
+export const resolvers = {
+  Query: {
+    pokemon: async (_: unknown, args: { name?: string; id?: number }) => {
+      const identifier = args.name || args.id;
+      if (!identifier) throw new Error("Se debe proporcionar un nombre o un ID");
+
+      // Obtener los datos básicos del Pokémon desde la PokeAPI
+      const data = await fetchPokemonData(identifier);
+
+      return {
+        id: data.id,
+        name: data.name,
+        abilities: data.abilities,
+        moves: data.moves,
+      };
+    },
+  },
+
+  Pokemon: {
+    abilities: async (parent: any) => {
+      // Resolver las habilidades y obtener el efecto de cada una
+      return await Promise.all(
+        parent.abilities.map(async (abilityEntry: any) => {
+          const name = abilityEntry.ability.name;
+          const effect = await fetchAbilityDetails(abilityEntry.ability.url);
+          return { name, effect };
+        })
+      );
+    },
+
+    moves: (parent: any) => {
+      // Resolver los movimientos del Pokémon
+      return parent.moves.map((moveEntry: any) => ({
+        name: moveEntry.move.name,
+      }));
+    },
+  },
+};

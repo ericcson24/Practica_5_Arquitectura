@@ -1,162 +1,94 @@
-import { MongoClient, ObjectId } from "mongodb";
 import { ApolloServer } from "@apollo/server";
 import { startStandaloneServer } from "@apollo/server/standalone";
 
 //-----------------------------------------------------------------------------------------------------------------------------\\
 
-// Conexiones a la base de datos
-
-const MongoUrl = Deno.env.get("MONGO_URL");
-
-if (!MongoUrl) Deno.exit(1);
-
-const client = new MongoClient(MongoUrl);
-
-await client.connect();
-console.log("Conectado correctamente a la base de datos");
-
-// Base de datos y colecciones
-const db = client.db("tiendaRepuestos");
-const vehicleCollection = db.collection("vehicles");
-const partCollection = db.collection("parts");
-
-console.log("Base de datos activa");
-
-//-----------------------------------------------------------------------------------------------------------------------------\\
-
-// Esquema de GraphQL
-
+// Definición del esquema de GraphQL
 const typeDefs = `#graphql
-  type Vehicle {
-    id: String!
+  type Ability {
     name: String!
-    manufacturer: String!
-    year: Int!
-    parts: [Part!]!
-    joke: String
+    effect: String
   }
 
-  type Part {
-    id: String!
+  type Move {
     name: String!
-    price: Float!
-    vehicleId: String!
+  }
+
+  type Pokemon {
+    id: Int!
+    name: String!
+    abilities: [Ability!]!
+    moves: [Move!]!
   }
 
   type Query {
-    getVehicles(manufacturer: String): [Vehicle!]!
-    getVehicle(id: String!): Vehicle
-    getParts: [Part!]!
-    getPartsByVehicle(vehicleId: String!): [Part!]!
-  }
-
-  type Mutation {
-    addVehicle(name: String!, manufacturer: String!, year: Int!): Vehicle!
-    addPart(name: String!, price: Float!, vehicleId: String!): Part!
+    pokemon(name: String, id: Int): Pokemon
   }
 `;
 
 //-----------------------------------------------------------------------------------------------------------------------------\\
 
-// Resolvers
+// Funciones auxiliares para realizar peticiones a la PokeAPI
+async function fetchPokemonData(identifier: string | number) {
+  const response = await fetch(`https://pokeapi.co/api/v2/pokemon/${identifier}`);
+  if (!response.ok) {
+    throw new Error("Pokémon no encontrado");
+  }
+  return await response.json();
+}
 
+async function fetchAbilityDetails(url: string) {
+  const response = await fetch(url);
+  const data = await response.json();
+  // Extraemos el efecto en español si existe, de lo contrario, en inglés
+  const effectEntry =
+    data.effect_entries.find((entry: any) => entry.language.name === "es") ||
+    data.effect_entries.find((entry: any) => entry.language.name === "en");
+  return effectEntry ? effectEntry.effect : "Efecto no disponible";
+}
+
+//-----------------------------------------------------------------------------------------------------------------------------\\
+
+// Resolvers
 const resolvers = {
   Query: {
-    getVehicles: async (_: unknown, args: { manufacturer?: string }) => {
-      const query = args.manufacturer ? { manufacturer: args.manufacturer } : {};
-      const vehicles = await vehicleCollection.find(query).toArray();
+    pokemon: async (_: unknown, args: { name?: string; id?: number }) => {
+      const identifier = args.name || args.id;
+      if (!identifier) throw new Error("Se debe proporcionar un nombre o un ID");
 
-      return vehicles.map(async (v) => ({
-        id: v._id.toString(),
-        name: v.name,
-        manufacturer: v.manufacturer,
-        year: v.year,
-        parts: await partCollection.find({ vehicleId: v._id }).toArray(),
-        joke: await fetch("https://official-joke-api.appspot.com/random_joke")
-          .then((res) => res.json())
-          .then((joke) => `${joke.setup} - ${joke.punchline}`),
-      }));
-    },
-
-    getVehicle: async (_: unknown, args: { id: string }) => {
-      const vehicle = await vehicleCollection.findOne({ _id: new ObjectId(args.id) });
-      if (!vehicle) return undefined;
-
-      const parts = await partCollection.find({ vehicleId: vehicle._id }).toArray();
-      const joke = await fetch("https://official-joke-api.appspot.com/random_joke")
-        .then((res) => res.json())
-        .then((joke) => `${joke.setup} - ${joke.punchline}`);
+      const data = await fetchPokemonData(identifier);
 
       return {
-        id: vehicle._id.toString(),
-        name: vehicle.name,
-        manufacturer: vehicle.manufacturer,
-        year: vehicle.year,
-        parts,
-        joke,
+        id: data.id,
+        name: data.name,
+        abilities: data.abilities,
+        moves: data.moves,
       };
-    },
-
-    getParts: async () => {
-      const parts = await partCollection.find().toArray();
-      return parts.map((p) => ({
-        id: p._id.toString(),
-        name: p.name,
-        price: p.price,
-        vehicleId: p.vehicleId.toString(),
-      }));
-    },
-
-    getPartsByVehicle: async (_: unknown, args: { vehicleId: string }) => {
-      const parts = await partCollection.find({ vehicleId: new ObjectId(args.vehicleId) }).toArray();
-      return parts.map((p) => ({
-        id: p._id.toString(),
-        name: p.name,
-        price: p.price,
-        vehicleId: p.vehicleId.toString(),
-      }));
     },
   },
 
-  Mutation: {
-    addVehicle: async (_: unknown, args: { name: string; manufacturer: string; year: number }) => {
-      const { insertedId } = await vehicleCollection.insertOne({
-        name: args.name,
-        manufacturer: args.manufacturer,
-        year: args.year,
-      });
-
-      return {
-        id: insertedId.toString(),
-        name: args.name,
-        manufacturer: args.manufacturer,
-        year: args.year,
-        parts: [],
-        joke: "",
-      };
+  Pokemon: {
+    abilities: async (parent: any) => {
+      return await Promise.all(
+        parent.abilities.map(async (abilityEntry: any) => {
+          const name = abilityEntry.ability.name;
+          const effect = await fetchAbilityDetails(abilityEntry.ability.url);
+          return { name, effect };
+        })
+      );
     },
 
-    addPart: async (_: unknown, args: { name: string; price: number; vehicleId: string }) => {
-      const { insertedId } = await partCollection.insertOne({
-        name: args.name,
-        price: args.price,
-        vehicleId: new ObjectId(args.vehicleId),
-      });
-
-      return {
-        id: insertedId.toString(),
-        name: args.name,
-        price: args.price,
-        vehicleId: args.vehicleId,
-      };
+    moves: (parent: any) => {
+      return parent.moves.map((moveEntry: any) => ({
+        name: moveEntry.move.name,
+      }));
     },
   },
 };
 
 //-----------------------------------------------------------------------------------------------------------------------------\\
 
-// Arranque del servidor
-
+// Configuración y arranque del servidor
 const server = new ApolloServer({
   typeDefs,
   resolvers,
@@ -164,4 +96,4 @@ const server = new ApolloServer({
 
 const { url } = await startStandaloneServer(server, { listen: { port: 4000 } });
 
-console.log(`🚀  Server ready at: ${url}`);
+console.log(`🚀 Servidor GraphQL corriendo en: ${url}`);
